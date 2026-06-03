@@ -10,13 +10,11 @@ SESSION_COOKIE = os.environ["LEETCODE_SESSION"]
 OUTPUT_DIR = "problems"
 PROGRESS_FILE = ".sync_state.json"
 GRAPHQL_URL = "https://leetcode.com/graphql"
+PAGE_SIZE = 20       # submissions fetched per page
+RATE_DELAY = 1.5     # seconds between API calls to avoid rate limiting
 
 # ── Extract CSRF token from the session JWT payload ─────────────────────────
 def get_csrf_token():
-    """
-    LEETCODE_SESSION is a JWT (header.payload.sig).
-    The payload contains a 'csrfToken' field we can decode without any library.
-    """
     try:
         parts = SESSION_COOKIE.split(".")
         if len(parts) >= 2:
@@ -28,8 +26,6 @@ def get_csrf_token():
                 return csrf
     except Exception as e:
         print(f"  ⚠️  JWT decode failed: {e}")
-
-    # Hard fallback — LeetCode sometimes accepts any consistent token
     return "leetcode-sync-csrf-token"
 
 CSRF_TOKEN = get_csrf_token()
@@ -55,17 +51,19 @@ LANG_EXT = {
 
 DIFFICULTY_EMOJI = {"Easy": "🟢", "Medium": "🟡", "Hard": "🔴"}
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── State helpers ────────────────────────────────────────────────────────────
 def load_state():
     if os.path.exists(PROGRESS_FILE):
         with open(PROGRESS_FILE) as f:
             return json.load(f)
-    return {"synced_ids": []}
+    # first_run=True triggers a full historical sync
+    return {"synced_ids": [], "first_run": True}
 
 def save_state(state):
     with open(PROGRESS_FILE, "w") as f:
         json.dump(state, f, indent=2)
 
+# ── GraphQL helper ───────────────────────────────────────────────────────────
 def graphql(query, variables=None):
     resp = requests.post(
         GRAPHQL_URL,
@@ -78,9 +76,70 @@ def graphql(query, variables=None):
     resp.raise_for_status()
     return resp.json()
 
-# ── Fetch accepted submissions ───────────────────────────────────────────────
-def get_accepted_submissions(limit=20, offset=0):
-    # Uses the correct query name that works for all users
+# ── Get current username ─────────────────────────────────────────────────────
+def get_username():
+    query = """
+    query globalData {
+      userStatus { username }
+    }
+    """
+    data = graphql(query)
+    username = data["data"]["userStatus"]["username"]
+    print(f"  👤 Logged in as: {username}")
+    return username
+
+# ── Fetch ALL accepted submissions via pagination ────────────────────────────
+def get_all_accepted_submissions(username):
+    """
+    recentAcSubmissionList has a max limit of 20 per call.
+    We use submissionList (paginated) to walk through the full history.
+    One submission per problem is kept (the most recent accepted one).
+    """
+    query = """
+    query submissionList($offset: Int!, $limit: Int!, $status: Int) {
+      submissionList(offset: $offset, limit: $limit, status: $status) {
+        lastKey
+        hasNext
+        submissions {
+          id
+          titleSlug
+          lang
+          statusDisplay
+          timestamp
+        }
+      }
+    }
+    """
+    all_subs = []
+    seen_slugs = set()   # keep only first (most recent) accepted per problem
+    offset = 0
+    page = 1
+
+    print("  📄 Paginating through full submission history...")
+    while True:
+        print(f"     page {page} (offset {offset})...")
+        data = graphql(query, {"offset": offset, "limit": PAGE_SIZE, "status": 10})
+        result = data["data"]["submissionList"]
+        subs = result["submissions"]
+
+        for sub in subs:
+            slug = sub["titleSlug"]
+            if slug not in seen_slugs:
+                seen_slugs.add(slug)
+                all_subs.append(sub)
+
+        if not result["hasNext"] or not subs:
+            break
+
+        offset += PAGE_SIZE
+        page += 1
+        time.sleep(RATE_DELAY)   # be polite between pages
+
+    print(f"  📊 Found {len(all_subs)} unique solved problems in history")
+    return all_subs
+
+# ── Fetch recent accepted submissions (normal runs) ──────────────────────────
+def get_recent_accepted_submissions(username, limit=20):
     query = """
     query recentAcSubmissions($username: String!, $limit: Int!) {
       recentAcSubmissionList(username: $username, limit: $limit) {
@@ -91,25 +150,10 @@ def get_accepted_submissions(limit=20, offset=0):
       }
     }
     """
-    # First get the current username
-    username = get_username()
     data = graphql(query, {"username": username, "limit": limit})
     return data["data"]["recentAcSubmissionList"]
 
-def get_username():
-    query = """
-    query globalData {
-      userStatus {
-        username
-      }
-    }
-    """
-    data = graphql(query)
-    username = data["data"]["userStatus"]["username"]
-    print(f"  👤 Logged in as: {username}")
-    return username
-
-# ── Fetch submission code (separate query needed) ────────────────────────────
+# ── Fetch submission code ────────────────────────────────────────────────────
 def get_submission_detail(submission_id):
     query = """
     query submissionDetails($submissionId: Int!) {
@@ -140,7 +184,7 @@ def get_problem_details(title_slug):
     data = graphql(query, {"titleSlug": title_slug})
     return data["data"]["question"]
 
-# ── Strip HTML from problem content ─────────────────────────────────────────
+# ── HTML → Markdown ──────────────────────────────────────────────────────────
 def html_to_markdown(html: str) -> str:
     import re
     html = re.sub(r"<pre>(.*?)</pre>", lambda m: "\n```\n" + m.group(1).strip() + "\n```\n", html, flags=re.DOTALL)
@@ -163,7 +207,6 @@ def build_readme(problem, lang, submission_id):
     hints = problem.get("hints") or []
     ext   = LANG_EXT.get(lang, lang)
     emoji = DIFFICULTY_EMOJI.get(diff, "⚪")
-
     tag_badges = " ".join(f"`{t}`" for t in tags)
 
     hints_section = ""
@@ -192,12 +235,11 @@ See [`solution.{ext}`](./solution.{ext})
 *Synced automatically from [LeetCode](https://leetcode.com/problems/{problem['titleSlug']}/) · Submission ID: {submission_id}*
 """
 
-# ── Write files ──────────────────────────────────────────────────────────────
+# ── Write solution files ─────────────────────────────────────────────────────
 def write_solution(problem, lang, code, submission_id):
-    num   = problem["questionFrontendId"].zfill(4)
-    slug  = problem["titleSlug"]
-    ext   = LANG_EXT.get(lang, lang)
-
+    num    = problem["questionFrontendId"].zfill(4)
+    slug   = problem["titleSlug"]
+    ext    = LANG_EXT.get(lang, lang)
     folder = os.path.join(OUTPUT_DIR, f"{num}-{slug}")
     os.makedirs(folder, exist_ok=True)
 
@@ -213,15 +255,8 @@ def write_solution(problem, lang, code, submission_id):
 
     print(f"  ✅ {num}. {problem['title']} [{lang}]")
 
-# ── Main ─────────────────────────────────────────────────────────────────────
-def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    state = load_state()
-    synced_ids = set(state["synced_ids"])
-
-    print("🔍 Fetching recent accepted submissions...")
-    submissions = get_accepted_submissions(limit=20)
-
+# ── Process a list of submissions ────────────────────────────────────────────
+def process_submissions(submissions, synced_ids):
     new_count = 0
     for sub in submissions:
         sid = sub["id"]
@@ -230,25 +265,44 @@ def main():
 
         title_slug = sub["titleSlug"]
         lang       = sub["lang"]
-        print(f"  → Processing: {title_slug}")
+        print(f"  → {title_slug}")
 
         try:
-            # Fetch code separately
             detail = get_submission_detail(sid)
             if not detail:
                 print(f"  ⚠️  Could not fetch code for {title_slug}, skipping")
                 continue
-            code = detail["code"]
-
+            code    = detail["code"]
             problem = get_problem_details(title_slug)
             write_solution(problem, lang, code, sid)
             synced_ids.add(sid)
             new_count += 1
-            time.sleep(1)
+            time.sleep(RATE_DELAY)
         except Exception as e:
             print(f"  ⚠️  Skipped {title_slug}: {e}")
 
-    state["synced_ids"] = list(synced_ids)
+    return new_count
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+def main():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    state      = load_state()
+    synced_ids = set(state["synced_ids"])
+    first_run  = state.get("first_run", False)
+    username   = get_username()
+
+    if first_run:
+        print("\n🚀 First run detected — performing full historical sync...")
+        submissions = get_all_accepted_submissions(username)
+    else:
+        print("\n🔍 Fetching recent accepted submissions...")
+        submissions = get_recent_accepted_submissions(username, limit=20)
+
+    new_count = process_submissions(submissions, synced_ids)
+
+    # Mark first_run as done after successful historical sync
+    state["first_run"]   = False
+    state["synced_ids"]  = list(synced_ids)
     save_state(state)
 
     if new_count == 0:
