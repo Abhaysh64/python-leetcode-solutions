@@ -10,8 +10,8 @@ SESSION_COOKIE = os.environ["LEETCODE_SESSION"]
 OUTPUT_DIR = "problems"
 PROGRESS_FILE = ".sync_state.json"
 GRAPHQL_URL = "https://leetcode.com/graphql"
-PAGE_SIZE = 20       # submissions fetched per page
-RATE_DELAY = 1.5     # seconds between API calls to avoid rate limiting
+PAGE_SIZE = 20
+RATE_DELAY = 1.5
 
 # ── Extract CSRF token from the session JWT payload ─────────────────────────
 def get_csrf_token():
@@ -56,7 +56,6 @@ def load_state():
     if os.path.exists(PROGRESS_FILE):
         with open(PROGRESS_FILE) as f:
             return json.load(f)
-    # first_run=True triggers a full historical sync
     return {"synced_ids": [], "first_run": True}
 
 def save_state(state):
@@ -91,13 +90,12 @@ def get_username():
 # ── Fetch ALL accepted submissions via pagination ────────────────────────────
 def get_all_accepted_submissions(username):
     """
-    recentAcSubmissionList has a max limit of 20 per call.
-    We use submissionList (paginated) to walk through the full history.
-    One submission per problem is kept (the most recent accepted one).
+    Paginate through ALL submissions, filter to Accepted only,
+    and keep the most recent accepted submission per problem.
     """
     query = """
-    query submissionList($offset: Int!, $limit: Int!, $status: Int) {
-      submissionList(offset: $offset, limit: $limit, status: $status) {
+    query submissionList($offset: Int!, $limit: Int!) {
+      submissionList(offset: $offset, limit: $limit) {
         lastKey
         hasNext
         submissions {
@@ -110,31 +108,32 @@ def get_all_accepted_submissions(username):
       }
     }
     """
-    all_subs = []
-    seen_slugs = set()   # keep only first (most recent) accepted per problem
+    accepted = {}   # slug → most recent accepted submission
     offset = 0
     page = 1
 
     print("  📄 Paginating through full submission history...")
     while True:
         print(f"     page {page} (offset {offset})...")
-        data = graphql(query, {"offset": offset, "limit": PAGE_SIZE, "status": 10})
+        data = graphql(query, {"offset": offset, "limit": PAGE_SIZE})
         result = data["data"]["submissionList"]
         subs = result["submissions"]
 
         for sub in subs:
-            slug = sub["titleSlug"]
-            if slug not in seen_slugs:
-                seen_slugs.add(slug)
-                all_subs.append(sub)
+            if sub["statusDisplay"] == "Accepted":
+                slug = sub["titleSlug"]
+                # submissions are newest-first, so first seen = most recent
+                if slug not in accepted:
+                    accepted[slug] = sub
 
         if not result["hasNext"] or not subs:
             break
 
         offset += PAGE_SIZE
         page += 1
-        time.sleep(RATE_DELAY)   # be polite between pages
+        time.sleep(RATE_DELAY)
 
+    all_subs = list(accepted.values())
     print(f"  📊 Found {len(all_subs)} unique solved problems in history")
     return all_subs
 
@@ -300,9 +299,8 @@ def main():
 
     new_count = process_submissions(submissions, synced_ids)
 
-    # Mark first_run as done after successful historical sync
-    state["first_run"]   = False
-    state["synced_ids"]  = list(synced_ids)
+    state["first_run"]  = False
+    state["synced_ids"] = list(synced_ids)
     save_state(state)
 
     if new_count == 0:
