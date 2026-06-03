@@ -31,6 +31,6 @@ problems/
 1. Fork or clone this repo
 2. Go to **Settings → Secrets → Actions**
 3. Add secret: `LEETCODE_SESSION` (copy from your browser cookies on leetcode.com)
-4. Done! The workflow runs automatically every hour.
+4. Done! The workflow runs automatically every 12 hour.
 
 > **Tip:** Don't log out of LeetCode explicitly — your session cookie will stay valid for months.
