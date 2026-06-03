@@ -8,16 +8,38 @@ from slugify import slugify
 SESSION_COOKIE = os.environ["LEETCODE_SESSION"]
 OUTPUT_DIR = "problems"
 PROGRESS_FILE = ".sync_state.json"
+GRAPHQL_URL = "https://leetcode.com/graphql"
+
+# ── Bootstrap: get a real csrftoken from LeetCode ───────────────────────────
+def get_csrf_token():
+    """Hit the LeetCode homepage to obtain a valid csrftoken cookie."""
+    session = requests.Session()
+    session.cookies.set("LEETCODE_SESSION", SESSION_COOKIE, domain="leetcode.com")
+    resp = session.get(
+        "https://leetcode.com/",
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=15,
+    )
+    csrf = session.cookies.get("csrftoken", domain="leetcode.com")
+    if not csrf:
+        # Fall back: parse from Set-Cookie header directly
+        for c in resp.cookies:
+            if c.name == "csrftoken":
+                csrf = c.value
+                break
+    if not csrf:
+        raise RuntimeError("Could not obtain csrftoken from LeetCode. Check your LEETCODE_SESSION secret.")
+    return csrf
+
+CSRF_TOKEN = get_csrf_token()
 
 HEADERS = {
-    "Cookie": f"LEETCODE_SESSION={SESSION_COOKIE}",
+    "Cookie": f"LEETCODE_SESSION={SESSION_COOKIE}; csrftoken={CSRF_TOKEN}",
     "Content-Type": "application/json",
     "Referer": "https://leetcode.com",
     "User-Agent": "Mozilla/5.0",
-    "x-csrftoken": "dummy",
+    "x-csrftoken": CSRF_TOKEN,
 }
-
-GRAPHQL_URL = "https://leetcode.com/graphql"
 
 # ── Language → file extension map ───────────────────────────────────────────
 LANG_EXT = {
