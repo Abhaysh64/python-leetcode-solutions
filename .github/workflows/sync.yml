@@ -2,7 +2,7 @@ name: Sync LeetCode Solutions
 
 on:
   schedule:
-    - cron: '0 * * * *'  # runs every hour
+    - cron: '0 0,12 * * *'  # runs at midnight and noon UTC
   workflow_dispatch:       # allows manual trigger from GitHub UI
 
 permissions:
@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -27,7 +29,6 @@ jobs:
       - name: Run LeetCode sync script
         env:
           LEETCODE_SESSION: ${{ secrets.LEETCODE_SESSION }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python scripts/sync.py
 
       - name: Commit and push changes
