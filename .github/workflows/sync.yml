@@ -2,17 +2,35 @@ name: Sync LeetCode Solutions
 
 on:
   schedule:
-    - cron: '0 * * * *'  # every hour
-  workflow_dispatch:
+    - cron: '0 * * * *'  # runs every hour
+  workflow_dispatch:       # allows manual trigger from GitHub UI
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
-      - name: Sync LeetCode
-        uses: ianding1/leetcode-sync@v1
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          leetcode-session: ${{ secrets.LEETCODE_SESSION }}
-          destination-folder: problems
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests python-slugify
+
+      - name: Run LeetCode sync script
+        env:
+          LEETCODE_SESSION: ${{ secrets.LEETCODE_SESSION }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/sync.py
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "leetcode-sync-bot"
+          git config --global user.email "bot@leetcode-sync"
+          git add .
+          git diff --cached --quiet || git commit -m "sync: add new LeetCode solutions"
+          git push
