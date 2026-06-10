@@ -19,7 +19,7 @@ problems/
 
 ## ⚙️ How it works
 
-1. A GitHub Action runs **every hour**
+1. A GitHub Action runs **every 6 hours**
 2. It fetches your latest accepted submissions from LeetCode
 3. For each new solution, it creates a folder with:
    - `README.md` — full problem description, difficulty, topic tags, and hints
