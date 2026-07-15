@@ -24,7 +24,7 @@ problems/
 3. For each new solution, it creates a folder with:
    - `README.md` — full problem description, difficulty, topic tags, and hints
    - `solution.<ext>` — your accepted code
-4. Changes are committed and pushed automatically
+4. Changes are committed and pushed automatically to the repository
 
 ## 🚀 Setup (one-time)
 
